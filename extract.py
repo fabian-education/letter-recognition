@@ -451,12 +451,20 @@ def extract_and_save_cells(warped_gray, warped_color, warped_grid_mask, output_f
                            rows, cols, save_rows, output_cell_size, output_borders, 
                            output_size, padding, center_padding_percent=0.1, boundary_padding=2, char_darkness_threshold=128,
                            enable_centering=False, border_removal_width=5, border_lightness_threshold=200,
-                           ink_darkness_threshold=180, grid_line_thickness=3):
-    """Extract cells from warped image and save them."""
+                           ink_darkness_threshold=180, start_letter='A'):
+    """Extract cells from warped image and save them.
+    
+    Args:
+        start_letter: The letter that the first row corresponds to (e.g., 'A' or 'P')
+    """
     vis_image = warped_color.copy()
     letter_id = start_letter_id
+    current_letter_ord = ord(start_letter)
     
     for row in range(rows):
+        # Calculate the current letter for this row
+        current_letter = chr(current_letter_ord + row) if (current_letter_ord + row) <= ord('Z') else None
+        
         for col in range(cols):
             x1, y1, x2, y2 = get_cell_boundaries(
                 row, col, rows, cols, output_cell_size, output_borders, output_size
@@ -490,10 +498,21 @@ def extract_and_save_cells(warped_gray, warped_color, warped_grid_mask, output_f
                     out_img = center_character(cleaned_cell, output_cell_size, center_padding_percent, boundary_padding, char_darkness_threshold)
                 else:
                     out_img = cv2.resize(cleaned_cell, (output_cell_size, output_cell_size))
-                cv2.imwrite(
-                    os.path.join(output_folder, f"letter_{letter_id:03d}_r{row:02d}_c{col:02d}.png"),
-                    out_img
-                )
+                
+                # Create letter folder and save with letter name
+                if current_letter:
+                    letter_folder = os.path.join(output_folder, current_letter)
+                    os.makedirs(letter_folder, exist_ok=True)
+                    cv2.imwrite(
+                        os.path.join(letter_folder, f"{current_letter}_{col:02d}.png"),
+                        out_img
+                    )
+                else:
+                    # Fallback for rows beyond Z
+                    cv2.imwrite(
+                        os.path.join(output_folder, f"letter_{letter_id:03d}_r{row:02d}_c{col:02d}.png"),
+                        out_img
+                    )
                 
                 # Draw green rectangle for cell boundaries
                 cv2.rectangle(vis_image, (x1, y1), (x2, y2), (0, 255, 0), 1)
@@ -518,7 +537,7 @@ def process_image(image_path, image_rows, inner_cols, inner_rows, extra_offsets,
                   show_grid_detection, center_padding_percent=0.1, boundary_padding=2,
                   rotation_correction=True, rotation_threshold=0.3, char_darkness_threshold=128,
                   enable_centering=False, border_removal_width=5, border_lightness_threshold=200,
-                  ink_darkness_threshold=180, grid_line_thickness=3):
+                  ink_darkness_threshold=180, grid_line_thickness=3, start_letter='A'):
     """Process a single image and extract letter cells."""
     image = cv2.imread(image_path)
     if image is None:
@@ -586,7 +605,7 @@ def process_image(image_path, image_rows, inner_cols, inner_rows, extra_offsets,
         warped_gray, warped_color, grid_mask, output_folder, start_letter_id,
         rows, cols, save_rows, output_cell_size, output_borders, output_size, padding,
         center_padding_percent, boundary_padding, char_darkness_threshold, enable_centering,
-        border_removal_width, border_lightness_threshold, ink_darkness_threshold, grid_line_thickness
+        border_removal_width, border_lightness_threshold, ink_darkness_threshold, start_letter
     )
     
     print(f"Extracted {letter_id - start_letter_id} letters (IDs {start_letter_id} to {letter_id - 1})")
@@ -627,10 +646,10 @@ def show_results(debug_images, vis_images, show_grid_detection, show_grid_previe
 def main():
     # Configuration
     output_folder = "letters"
-    image_configs = [
-        {"path": "./data/57-60-bilder-2.jpg", "rows": None},
-        {"path": "./data/57-60-bilder-3.jpg", "rows": 9},
-    ]
+    image_configs = {
+        "Part_A": {"path": "./data/57-60-bilder-2.jpg", "rows": None},
+        "Part_B": {"path": "./data/57-60-bilder-3.jpg", "rows": 9},
+    }
     
     # Debug settings
     show_grid_preview = True
@@ -647,7 +666,7 @@ def main():
     # Output settings
     output_cell_size = 64
     padding = 0             # pixels to remove from each side inside cell before centering
-    center_padding_percent = 0.05  # x% padding around centered character (added to outside)
+    center_padding_percent = 0.02  # x% padding around centered character (added to outside)
     boundary_padding = 2    # pixels of padding around letter bounding box to avoid cutting
     
     # Rotation correction settings
@@ -682,12 +701,19 @@ def main():
     letter_id = 0
     vis_images = []
     debug_images = []
+    
+    # Starting letters for each part
+    part_start_letters = {
+        "Part_A": 'A',  # A to O (15 letters)
+        "Part_B": 'P',  # P to Z (11 letters)
+    }
 
-    for config in image_configs:
+    for part_name, config in image_configs.items():
         image_file = config["path"]
         image_rows = config["rows"] if config["rows"] is not None else inner_rows
+        start_letter = part_start_letters.get(part_name, 'A')
 
-        print(f"\nProcessing: {image_file} (rows: {image_rows})")
+        print(f"\nProcessing: {image_file} (rows: {image_rows}, starting letter: {start_letter})")
 
         debug_image, vis_image, letter_id = process_image(
             image_file, image_rows, inner_cols, inner_rows, extra_offsets,
@@ -695,7 +721,7 @@ def main():
             center_padding_percent, boundary_padding, rotation_correction, rotation_threshold, char_darkness_threshold,
             enable_centering=enable_centering, border_removal_width=border_removal_width,
             border_lightness_threshold=border_lightness_threshold, ink_darkness_threshold=ink_darkness_threshold,
-            grid_line_thickness=grid_line_thickness
+            grid_line_thickness=grid_line_thickness, start_letter=start_letter
         )
 
         if debug_image is not None:
