@@ -70,6 +70,109 @@ def find_grid_corners(intersection_points):
     }
 
 
+def calculate_grid_rotation_angle(corners):
+    """Calculate the rotation angle of the grid based on detected corners.
+    
+    Uses the top edge (top_left to top_right) and left edge to determine
+    how much the grid is rotated from horizontal/vertical.
+    """
+    # Calculate angle from top edge
+    dx_top = corners['top_right'][0] - corners['top_left'][0]
+    dy_top = corners['top_right'][1] - corners['top_left'][1]
+    angle_top = np.degrees(np.arctan2(dy_top, dx_top))
+    
+    # Calculate angle from bottom edge
+    dx_bottom = corners['bottom_right'][0] - corners['bottom_left'][0]
+    dy_bottom = corners['bottom_right'][1] - corners['bottom_left'][1]
+    angle_bottom = np.degrees(np.arctan2(dy_bottom, dx_bottom))
+    
+    # Calculate angle from left edge (should be ~90 degrees if grid is straight)
+    dx_left = corners['bottom_left'][0] - corners['top_left'][0]
+    dy_left = corners['bottom_left'][1] - corners['top_left'][1]
+    angle_left = np.degrees(np.arctan2(dy_left, dx_left)) - 90
+    
+    # Calculate angle from right edge
+    dx_right = corners['bottom_right'][0] - corners['top_right'][0]
+    dy_right = corners['bottom_right'][1] - corners['top_right'][1]
+    angle_right = np.degrees(np.arctan2(dy_right, dx_right)) - 90
+    
+    # Average the angles for more robust estimation
+    avg_angle = (angle_top + angle_bottom + angle_left + angle_right) / 4
+    
+    return avg_angle
+
+
+def rotate_image(image, angle, center=None):
+    """Rotate image by the given angle around the center."""
+    h, w = image.shape[:2]
+    
+    if center is None:
+        center = (w // 2, h // 2)
+    
+    # Get rotation matrix
+    rotation_matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+    
+    # Calculate new bounding box size to avoid cropping
+    cos = np.abs(rotation_matrix[0, 0])
+    sin = np.abs(rotation_matrix[0, 1])
+    new_w = int(h * sin + w * cos)
+    new_h = int(h * cos + w * sin)
+    
+    # Adjust rotation matrix for the new image size
+    rotation_matrix[0, 2] += (new_w - w) / 2
+    rotation_matrix[1, 2] += (new_h - h) / 2
+    
+    # Perform rotation with white background
+    if len(image.shape) == 2:
+        rotated = cv2.warpAffine(image, rotation_matrix, (new_w, new_h), 
+                                  borderMode=cv2.BORDER_CONSTANT, borderValue=255)
+    else:
+        rotated = cv2.warpAffine(image, rotation_matrix, (new_w, new_h),
+                                  borderMode=cv2.BORDER_CONSTANT, borderValue=(255, 255, 255))
+    
+    return rotated
+
+
+def detect_and_correct_rotation(image, gray, angle_threshold=0.3, max_iterations=3):
+    """Detect grid rotation and correct it iteratively.
+    
+    Returns the corrected image and the total rotation applied.
+    """
+    total_rotation = 0.0
+    current_image = image.copy()
+    current_gray = gray.copy()
+    
+    for iteration in range(max_iterations):
+        # Detect grid lines
+        horizontal_lines, vertical_lines = detect_grid_lines(current_gray)
+        intersection_points = find_grid_intersections(horizontal_lines, vertical_lines)
+        
+        if len(intersection_points) < 4:
+            print(f"  Rotation iteration {iteration + 1}: Not enough intersections found")
+            break
+        
+        corners = find_grid_corners(intersection_points)
+        if corners is None:
+            break
+        
+        # Calculate rotation angle
+        angle = calculate_grid_rotation_angle(corners)
+        
+        print(f"  Rotation iteration {iteration + 1}: Detected angle = {angle:.3f}°")
+        
+        # Stop if angle is below threshold
+        if abs(angle) < angle_threshold:
+            print(f"  Angle below threshold ({angle_threshold}°), stopping rotation correction")
+            break
+        
+        # Rotate to correct
+        current_image = rotate_image(current_image, angle)
+        current_gray = rotate_image(current_gray, angle)
+        total_rotation += angle
+    
+    return current_image, current_gray, total_rotation
+
+
 def create_debug_image(horizontal_lines, vertical_lines, intersection_points, corners):
     """Create a debug visualization of detected grid and corners."""
     grid = cv2.add(horizontal_lines, vertical_lines)
@@ -174,17 +277,29 @@ def get_cell_boundaries(row, col, rows, cols, output_cell_size, output_borders, 
     return x1, y1, x2, y2
 
 
-def center_character(cell_img, output_size, padding_percent=0.1, boundary_padding=2):
+def center_character(cell_img, output_size, padding_percent=0.1, boundary_padding=2, char_darkness_threshold=128):
     """Center the character in the cell with padding around the outside.
     
-    1. Find the exact bounding box of the character (the 'orange area')
-    2. Add small boundary padding around the letter to avoid cutting
-    3. Scale the character to fit within the available space (output_size - 2*padding)
-    4. Center it with padding on all sides
+    1. Apply smoothing filter and thresholding
+    2. Find the exact bounding box of the character (the 'orange area')
+    3. Add small boundary padding around the letter to avoid cutting
+    4. Scale the character to fit within the available space (output_size - 2*padding)
+    5. Center it with padding on all sides
+    
+    Args:
+        cell_img: Grayscale cell image
+        output_size: Size of output image (square)
+        padding_percent: Percentage of output size to use as padding around character
+        boundary_padding: Extra pixels around detected bounding box
+        char_darkness_threshold: Only pixels DARKER than this value (lower value) are detected as character.
+                                 Lower threshold = only very dark pixels detected (e.g., 50)
+                                 Higher threshold = lighter gray also detected (e.g., 150)
     """
-    # Use adaptive thresholding to better capture light strokes
-    thresh = cv2.adaptiveThreshold(cell_img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                    cv2.THRESH_BINARY_INV, 21, 5)
+    # Smoothing filter (Gaussian blur)
+    smoothed = cv2.GaussianBlur(cell_img, (3, 3), 0)
+    # Threshold: pixels darker than char_darkness_threshold are detected as character
+    # THRESH_BINARY_INV: pixels <= threshold become 255 (foreground), pixels > threshold become 0
+    _, thresh = cv2.threshold(smoothed, char_darkness_threshold, 255, cv2.THRESH_BINARY_INV)
     
     # Dilate to expand detection area and capture stroke edges
     kernel = np.ones((5, 5), np.uint8)
@@ -278,9 +393,45 @@ def remove_grid_lines_from_cell(cell_img, grid_mask_cell):
     return cleaned
 
 
+def remove_border_remnants(cell_img, edge_width=5, lightness_threshold=200):
+    """Remove border remnants by clearing light gray pixels near cell edges.
+    
+    Border remnants are typically light gray (close to white but not pure white).
+    This function removes pixels that are lighter than the threshold near edges,
+    while preserving darker pixels which are the actual letters.
+    
+    Args:
+        cell_img: Grayscale cell image
+        edge_width: Width of edge strip to scan (in pixels)
+        lightness_threshold: Pixels with value ABOVE this near edges are set to white.
+                            Lower value = more aggressive (e.g., 180 removes medium gray)
+                            Higher value = less aggressive (e.g., 230 only removes very light gray)
+    """
+    cleaned = cell_img.copy()
+    h, w = cleaned.shape[:2]
+    
+    if h <= 2 * edge_width or w <= 2 * edge_width:
+        return cleaned
+    
+    # Create edge mask
+    edge_mask = np.zeros((h, w), dtype=bool)
+    edge_mask[:edge_width, :] = True      # Top edge
+    edge_mask[h-edge_width:, :] = True    # Bottom edge
+    edge_mask[:, :edge_width] = True      # Left edge
+    edge_mask[:, w-edge_width:] = True    # Right edge
+    
+    # Set light pixels in edge regions to white
+    # Pixels with value > lightness_threshold are considered "light" (border remnants)
+    # This preserves darker pixels which are the actual letter strokes
+    cleaned[edge_mask & (cleaned > lightness_threshold)] = 255
+    
+    return cleaned
+
+
 def extract_and_save_cells(warped_gray, warped_color, warped_grid_mask, output_folder, start_letter_id,
                            rows, cols, save_rows, output_cell_size, output_borders, 
-                           output_size, padding, center_padding_percent=0.1, boundary_padding=2):
+                           output_size, padding, center_padding_percent=0.1, boundary_padding=2, char_darkness_threshold=128,
+                           enable_centering=False, border_removal_width=5, border_lightness_threshold=200):
     """Extract cells from warped image and save them."""
     vis_image = warped_color.copy()
     letter_id = start_letter_id
@@ -308,12 +459,17 @@ def extract_and_save_cells(warped_gray, warped_color, warped_grid_mask, output_f
                 inner_y2 = (y2 - y1) - padding
                 cleaned_cell = cleaned_cell[inner_y1:inner_y2, inner_x1:inner_x2]
                 
-                # Center the character with padding
-                centered_img = center_character(cleaned_cell, output_cell_size, center_padding_percent, boundary_padding)
+                # Remove any remaining border remnants near edges
+                cleaned_cell = remove_border_remnants(cleaned_cell, border_removal_width, border_lightness_threshold)
                 
+                # Center the character with padding and smoothing threshold if enabled
+                if enable_centering:
+                    out_img = center_character(cleaned_cell, output_cell_size, center_padding_percent, boundary_padding, char_darkness_threshold)
+                else:
+                    out_img = cv2.resize(cleaned_cell, (output_cell_size, output_cell_size))
                 cv2.imwrite(
                     os.path.join(output_folder, f"letter_{letter_id:03d}_r{row:02d}_c{col:02d}.png"),
-                    centered_img
+                    out_img
                 )
                 
                 # Draw green rectangle for cell boundaries
@@ -336,7 +492,9 @@ def extract_and_save_cells(warped_gray, warped_color, warped_grid_mask, output_f
 
 def process_image(image_path, image_rows, inner_cols, inner_rows, extra_offsets, 
                   output_cell_size, padding, output_folder, start_letter_id, 
-                  show_grid_detection, center_padding_percent=0.1, boundary_padding=2):
+                  show_grid_detection, center_padding_percent=0.1, boundary_padding=2,
+                  rotation_correction=True, rotation_threshold=0.3, char_darkness_threshold=128,
+                  enable_centering=False, border_removal_width=5, border_lightness_threshold=200):
     """Process a single image and extract letter cells."""
     image = cv2.imread(image_path)
     if image is None:
@@ -345,7 +503,18 @@ def process_image(image_path, image_rows, inner_cols, inner_rows, extra_offsets,
     
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     
-    # Detect grid
+    # Apply rotation correction if enabled
+    if rotation_correction:
+        print("  Checking for rotation correction...")
+        image, gray, total_rotation = detect_and_correct_rotation(
+            image, gray, angle_threshold=rotation_threshold
+        )
+        if abs(total_rotation) > 0.01:
+            print(f"  Applied total rotation correction: {total_rotation:.3f}°")
+        else:
+            print("  No significant rotation correction needed")
+    
+    # Detect grid (on potentially rotated image)
     horizontal_lines, vertical_lines = detect_grid_lines(gray)
     intersection_points = find_grid_intersections(horizontal_lines, vertical_lines)
     
@@ -387,12 +556,13 @@ def process_image(image_path, image_rows, inner_cols, inner_rows, extra_offsets,
     save_rows = image_rows + 2
     
     # Create grid mask from calculated cell boundaries (the green lines)
-    grid_mask = create_grid_mask(output_size, rows, cols, output_cell_size, output_borders, line_thickness=8)
+    grid_mask = create_grid_mask(output_size, rows, cols, output_cell_size, output_borders, line_thickness=3)
     
     vis_image, letter_id = extract_and_save_cells(
         warped_gray, warped_color, grid_mask, output_folder, start_letter_id,
         rows, cols, save_rows, output_cell_size, output_borders, output_size, padding,
-        center_padding_percent, boundary_padding
+        center_padding_percent, boundary_padding, char_darkness_threshold, enable_centering,
+        border_removal_width, border_lightness_threshold
     )
     
     print(f"Extracted {letter_id - start_letter_id} letters (IDs {start_letter_id} to {letter_id - 1})")
@@ -456,32 +626,52 @@ def main():
     center_padding_percent = 0.05  # x% padding around centered character (added to outside)
     boundary_padding = 2    # pixels of padding around letter bounding box to avoid cutting
     
-    os.makedirs(output_folder, exist_ok=True)
+    # Rotation correction settings
+    rotation_correction = True   # Enable automatic rotation correction
+    rotation_threshold = 0.01     # Minimum angle (degrees) to trigger rotation correction
     
+    # Character detection threshold for centering
+    char_darkness_threshold = 180  # Only pixels darker than this are detected as character
+                                   # Lower = stricter, only very dark pixels (e.g., 50)
+                                   # Higher = more lenient, includes lighter strokes (e.g., 180)
+
+    # Centering option
+    enable_centering = True
+    
+    # Border remnant removal settings
+    border_removal_width = 7         # Width of edge strip to scan for border remnants (pixels)
+    border_lightness_threshold = 200 # Pixels lighter than this (value > threshold) near edges are removed
+                                     # Lower = more aggressive (180 removes medium gray borders)
+                                     # Higher = less aggressive (230 only removes very light gray)
+
+    os.makedirs(output_folder, exist_ok=True)
+
     # Process images
     letter_id = 0
     vis_images = []
     debug_images = []
-    
+
     for config in image_configs:
         image_file = config["path"]
         image_rows = config["rows"] if config["rows"] is not None else inner_rows
-        
+
         print(f"\nProcessing: {image_file} (rows: {image_rows})")
-        
+
         debug_image, vis_image, letter_id = process_image(
             image_file, image_rows, inner_cols, inner_rows, extra_offsets,
             output_cell_size, padding, output_folder, letter_id, show_grid_detection,
-            center_padding_percent, boundary_padding
+            center_padding_percent, boundary_padding, rotation_correction, rotation_threshold, char_darkness_threshold,
+            enable_centering=enable_centering, border_removal_width=border_removal_width,
+            border_lightness_threshold=border_lightness_threshold
         )
-        
+
         if debug_image is not None:
             debug_images.append((os.path.basename(image_file), debug_image))
         if vis_image is not None:
             vis_images.append((os.path.basename(image_file), vis_image))
-    
+
     print(f"\nDone. Total {letter_id} letters extracted from {len(image_configs)} images.")
-    
+
     # Show results
     show_results(debug_images, vis_images, show_grid_detection, show_grid_preview, 
                  display_scale_factor)
