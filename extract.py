@@ -447,15 +447,32 @@ def apply_darkness_threshold(cell_img, darkness_threshold=180):
     return result
 
 
+def scale_to_save_size(image, save_size):
+    """Scale the processed image to the final save size.
+    
+    Args:
+        image: The processed image (grayscale)
+        save_size: Target size for saving (square, in pixels)
+    
+    Returns:
+        Scaled image at save_size x save_size pixels
+    """
+    if image.shape[0] == save_size and image.shape[1] == save_size:
+        return image
+    
+    return cv2.resize(image, (save_size, save_size), interpolation=cv2.INTER_AREA)
+
+
 def extract_and_save_cells(warped_gray, warped_color, warped_grid_mask, output_folder, start_letter_id,
                            rows, cols, save_rows, output_cell_size, output_borders, 
                            output_size, padding, center_padding_percent=0.1, boundary_padding=2, char_darkness_threshold=128,
                            enable_centering=False, border_removal_width=5, border_lightness_threshold=200,
-                           ink_darkness_threshold=180, start_letter='A'):
+                           ink_darkness_threshold=180, start_letter='A', save_size=None):
     """Extract cells from warped image and save them.
     
     Args:
         start_letter: The letter that the first row corresponds to (e.g., 'A' or 'P')
+        save_size: Final size for saved images (if None, uses output_cell_size)
     """
     vis_image = warped_color.copy()
     letter_id = start_letter_id
@@ -499,6 +516,10 @@ def extract_and_save_cells(warped_gray, warped_color, warped_grid_mask, output_f
                 else:
                     out_img = cv2.resize(cleaned_cell, (output_cell_size, output_cell_size))
                 
+                # Scale to final save size if specified
+                final_save_size = save_size if save_size is not None else output_cell_size
+                out_img = scale_to_save_size(out_img, final_save_size)
+                
                 # Create letter folder and save with letter name
                 if current_letter:
                     letter_folder = os.path.join(output_folder, current_letter)
@@ -537,8 +558,12 @@ def process_image(image_path, image_rows, inner_cols, inner_rows, extra_offsets,
                   show_grid_detection, center_padding_percent=0.1, boundary_padding=2,
                   rotation_correction=True, rotation_threshold=0.3, char_darkness_threshold=128,
                   enable_centering=False, border_removal_width=5, border_lightness_threshold=200,
-                  ink_darkness_threshold=180, grid_line_thickness=3, start_letter='A'):
-    """Process a single image and extract letter cells."""
+                  ink_darkness_threshold=180, grid_line_thickness=3, start_letter='A', save_size=None):
+    """Process a single image and extract letter cells.
+    
+    Args:
+        save_size: Final size for saved images (if None, uses output_cell_size)
+    """
     image = cv2.imread(image_path)
     if image is None:
         print(f"Warning: Could not read {image_path}, skipping...")
@@ -605,7 +630,7 @@ def process_image(image_path, image_rows, inner_cols, inner_rows, extra_offsets,
         warped_gray, warped_color, grid_mask, output_folder, start_letter_id,
         rows, cols, save_rows, output_cell_size, output_borders, output_size, padding,
         center_padding_percent, boundary_padding, char_darkness_threshold, enable_centering,
-        border_removal_width, border_lightness_threshold, ink_darkness_threshold, start_letter
+        border_removal_width, border_lightness_threshold, ink_darkness_threshold, start_letter, save_size
     )
     
     print(f"Extracted {letter_id - start_letter_id} letters (IDs {start_letter_id} to {letter_id - 1})")
@@ -663,8 +688,10 @@ def main():
     # Manual extra offset for outer boxes
     extra_offsets = (50, 20, 10, 10)  # left, right, top, bottom
     
-    # Output settings
-    output_cell_size = 64
+    # Processing/Output settings
+    output_cell_size = 64   # size for processing
+    save_size = 32          # final size for saved images
+                            # set to None to use output_cell_size
     padding = 0             # pixels to remove from each side inside cell before centering
     center_padding_percent = 0.02  # x% padding around centered character (added to outside)
     boundary_padding = 2    # pixels of padding around letter bounding box to avoid cutting
@@ -721,7 +748,7 @@ def main():
             center_padding_percent, boundary_padding, rotation_correction, rotation_threshold, char_darkness_threshold,
             enable_centering=enable_centering, border_removal_width=border_removal_width,
             border_lightness_threshold=border_lightness_threshold, ink_darkness_threshold=ink_darkness_threshold,
-            grid_line_thickness=grid_line_thickness, start_letter=start_letter
+            grid_line_thickness=grid_line_thickness, start_letter=start_letter, save_size=save_size
         )
 
         if debug_image is not None:
