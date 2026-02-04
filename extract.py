@@ -5,110 +5,148 @@ import os
 output_folder = "letters"
 image = cv2.imread("./data/57-60-bilder-2.jpg")
 
-min_area = 100      # Lower to catch more letters
-max_area = 15000    # Filter out large grid sections
-padding = 5
-min_width = 8
-min_height = 12
-
 if image is None:
     raise FileNotFoundError("Image not found.")
 
 gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-
-# Better preprocessing for handwritten text
 blur = cv2.GaussianBlur(gray, (3, 3), 0)
 
-# Adaptive threshold works better for uneven lighting/ink
-thresh = cv2.adaptiveThreshold(
-    blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-    cv2.THRESH_BINARY_INV, 11, 8
-)
+# Use binary threshold for cleaner grid detection
+_, binary = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
 
-# Remove grid lines using morphological operations
-# Horizontal lines (longer kernel to catch full lines)
-horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (60, 1))
-horizontal_lines = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, horizontal_kernel)
+# Detect horizontal lines (use longer kernel)
+horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (80, 1))
+horizontal_lines = cv2.morphologyEx(binary, cv2.MORPH_OPEN, horizontal_kernel)
 
-# Vertical lines
-vertical_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 60))
-vertical_lines = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, vertical_kernel)
+# Dilate horizontal lines to close gaps
+horizontal_lines = cv2.dilate(horizontal_lines, cv2.getStructuringElement(cv2.MORPH_RECT, (20, 3)), iterations=2)
 
-# Remove lines from threshold image
-grid_lines = cv2.add(horizontal_lines, vertical_lines)
+# Detect vertical lines (use longer kernel)
+vertical_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 80))
+vertical_lines = cv2.morphologyEx(binary, cv2.MORPH_OPEN, vertical_kernel)
 
-# Dilate grid lines slightly to ensure complete removal
-grid_lines = cv2.dilate(grid_lines, np.ones((3, 3), np.uint8), iterations=1)
+# Dilate vertical lines to close gaps
+vertical_lines = cv2.dilate(vertical_lines, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 20)), iterations=2)
 
-thresh_clean = cv2.subtract(thresh, grid_lines)
+# Find intersections (where horizontal AND vertical lines meet)
+intersections = cv2.bitwise_and(horizontal_lines, vertical_lines)
 
-# Dilate to connect letter parts (dots, broken strokes)
-dilate_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-thresh_clean = cv2.dilate(thresh_clean, dilate_kernel, iterations=1)
+# Dilate intersections to make them easier to detect
+intersections = cv2.dilate(intersections, np.ones((5, 5), np.uint8), iterations=2)
 
-# Clean up noise
-kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
-thresh_clean = cv2.morphologyEx(thresh_clean, cv2.MORPH_CLOSE, kernel)
+# Find intersection points
+num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(intersections, connectivity=8)
 
-# Find contours of letters
-contours, _ = cv2.findContours(
-    thresh_clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-)
+# Collect intersection centers (skip background label 0)
+intersection_points = []
+for i in range(1, num_labels):
+    cx = int(centroids[i][0])
+    cy = int(centroids[i][1])
+    intersection_points.append((cx, cy))
 
-# Sort top to bottom then left to right
-bounding_boxes = [cv2.boundingRect(c) for c in contours]
-contours = [c for _, c in sorted(
-    zip(bounding_boxes, contours),
-    key=lambda b: (b[0][1] // 40, b[0][0])  # Group by rows
-)]
+print(f"Found {len(intersection_points)} intersections")
+
+# Find the 4 extreme corners of the grid
+if intersection_points:
+    points = np.array(intersection_points)
+    
+    # Top-left: min x + y
+    top_left_idx = np.argmin(points[:, 0] + points[:, 1])
+    top_left = tuple(points[top_left_idx])
+    
+    # Top-right: max x - y
+    top_right_idx = np.argmax(points[:, 0] - points[:, 1])
+    top_right = tuple(points[top_right_idx])
+    
+    # Bottom-left: min x - y
+    bottom_left_idx = np.argmin(points[:, 0] - points[:, 1])
+    bottom_left = tuple(points[bottom_left_idx])
+    
+    # Bottom-right: max x + y
+    bottom_right_idx = np.argmax(points[:, 0] + points[:, 1])
+    bottom_right = tuple(points[bottom_right_idx])
+    
+    grid_corners = [top_left, top_right, bottom_left, bottom_right]
+    print(f"Grid corners: TL={top_left}, TR={top_right}, BL={bottom_left}, BR={bottom_right}")
+else:
+    grid_corners = []
+    print("No corners found")
+    exit()
+
+# Grid dimensions
+cols = 8
+rows = 13
+
+# Calculate output size (maintain aspect ratio)
+cell_size = 50  # pixels per cell
+output_width = cols * cell_size
+output_height = rows * cell_size
+
+# Source points (detected corners): TL, TR, BL, BR -> need TL, TR, BR, BL order for perspective transform
+src_points = np.float32([
+    top_left,
+    top_right,
+    bottom_right,
+    bottom_left
+])
+
+# Destination points (rectangle)
+dst_points = np.float32([
+    [0, 0],
+    [output_width, 0],
+    [output_width, output_height],
+    [0, output_height]
+])
+
+# Get perspective transform matrix
+matrix = cv2.getPerspectiveTransform(src_points, dst_points)
+
+# Warp the grayscale image
+warped = cv2.warpPerspective(gray, matrix, (output_width, output_height))
+warped_color = cv2.warpPerspective(image, matrix, (output_width, output_height))
 
 os.makedirs(output_folder, exist_ok=True)
 
-# Create a copy for visualization
-vis_image = image.copy()
+# Create visualization
+vis_image = warped_color.copy()
 
+# Extract each cell
+padding = 3  # Small padding inside cell
 letter_id = 0
 
-for cnt in contours:
-    area = cv2.contourArea(cnt)
-    x, y, w, h = cv2.boundingRect(cnt)
-    
-    # Filter by area and dimensions
-    if area < min_area or area > max_area:
-        continue
-    if w < min_width or h < min_height:
-        continue
-    
-    # Skip very wide/flat shapes (likely line remnants)
-    aspect_ratio = w / h
-    if aspect_ratio > 5 or aspect_ratio < 0.08:
-        continue
+for row in range(rows):
+    for col in range(cols):
+        # Calculate cell boundaries
+        x1 = col * cell_size + padding
+        y1 = row * cell_size + padding
+        x2 = (col + 1) * cell_size - padding
+        y2 = (row + 1) * cell_size - padding
+        
+        # Extract the cell
+        cell_img = warped[y1:y2, x1:x2]
+        
+        # Save the cell
+        cv2.imwrite(
+            os.path.join(output_folder, f"letter_{letter_id:03d}_r{row:02d}_c{col:02d}.png"),
+            cell_img
+        )
+        
+        # Draw grid on visualization
+        cv2.rectangle(vis_image, 
+                      (col * cell_size, row * cell_size), 
+                      ((col + 1) * cell_size, (row + 1) * cell_size), 
+                      (0, 255, 0), 1)
+        cv2.putText(vis_image, str(letter_id), (col * cell_size + 5, row * cell_size + 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.3, (0, 0, 255), 1)
+        
+        letter_id += 1
 
-    x1 = max(x - padding, 0)
-    y1 = max(y - padding, 0)
-    x2 = min(x + w + padding, gray.shape[1])
-    y2 = min(y + h + padding, gray.shape[0])
+print(f"Done. {letter_id} letters extracted ({cols}x{rows} grid).")
 
-    letter_img = gray[y1:y2, x1:x2]
-
-    cv2.imwrite(
-        os.path.join(output_folder, f"letter_{letter_id}.png"),
-        letter_img
-    )
-
-    # Draw bounding box and label on visualization
-    cv2.rectangle(vis_image, (x1, y1), (x2, y2), (0, 255, 0), 2)
-    cv2.putText(vis_image, str(letter_id), (x1, y1 - 5),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
-
-    letter_id += 1
-
-print(f"Done. {letter_id} letters extracted.")
-
-# Show all detections in one window (scaled to fixed size)
-window_name = "Detected Letters"
+# Show warped result with grid
+window_name = "Extracted Grid Cells"
 cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-cv2.resizeWindow(window_name, 720, 1280)
+cv2.resizeWindow(window_name, 450, 800)
 cv2.imshow(window_name, vis_image)
 cv2.waitKey(0)
 cv2.destroyAllWindows()
