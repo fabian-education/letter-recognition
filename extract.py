@@ -66,28 +66,56 @@ if intersection_points:
     bottom_right_idx = np.argmax(points[:, 0] + points[:, 1])
     bottom_right = tuple(points[bottom_right_idx])
     
-    grid_corners = [top_left, top_right, bottom_left, bottom_right]
     print(f"Grid corners: TL={top_left}, TR={top_right}, BL={bottom_left}, BR={bottom_right}")
 else:
-    grid_corners = []
     print("No corners found")
     exit()
 
-# Grid dimensions
-cols = 8
-rows = 13
+# Grid dimensions (inside the detected corners)
+inner_cols = 8
+inner_rows = 13
 
-# Calculate output size (maintain aspect ratio)
-cell_size = 50  # pixels per cell
-output_width = cols * cell_size
-output_height = rows * cell_size
+# Calculate cell size based on detected corners
+grid_width = top_right[0] - top_left[0]
+grid_height = bottom_left[1] - top_left[1]
+cell_width = grid_width / inner_cols
+cell_height = grid_height / inner_rows
 
-# Source points (detected corners): TL, TR, BL, BR -> need TL, TR, BR, BL order for perspective transform
+print(f"Cell size: {cell_width:.1f} x {cell_height:.1f} px")
+
+# Manual extra offset for outer boxes (adjust these values as needed)
+extra_left = 50    # extra pixels on left beyond cell_width
+extra_right = 20   # extra pixels on right beyond cell_width
+extra_top = 10      # extra pixels on top beyond cell_height
+extra_bottom = 10   # extra pixels on bottom beyond cell_height
+
+# Expand corners with cell size + extra offset
+offset_tl = (int(top_left[0] - cell_width - extra_left), int(top_left[1] - cell_height - extra_top))
+offset_tr = (int(top_right[0] + cell_width + extra_right), int(top_right[1] - cell_height - extra_top))
+offset_bl = (int(bottom_left[0] - cell_width - extra_left), int(bottom_left[1] + cell_height + extra_bottom))
+offset_br = (int(bottom_right[0] + cell_width + extra_right), int(bottom_right[1] + cell_height + extra_bottom))
+
+print(f"Expanded corners: TL={offset_tl}, TR={offset_tr}, BL={offset_bl}, BR={offset_br}")
+
+# Output cell size
+output_cell_size = 64  # pixels per cell in output
+
+# Calculate output border sizes based on extra offsets
+output_border_left = output_cell_size + int(extra_left * output_cell_size / cell_width)
+output_border_right = output_cell_size + int(extra_right * output_cell_size / cell_width)
+output_border_top = output_cell_size + int(extra_top * output_cell_size / cell_height)
+output_border_bottom = output_cell_size + int(extra_bottom * output_cell_size / cell_height)
+
+# Total output dimensions
+output_width = output_border_left + (inner_cols * output_cell_size) + output_border_right
+output_height = output_border_top + (inner_rows * output_cell_size) + output_border_bottom
+
+# Source points (expanded corners)
 src_points = np.float32([
-    top_left,
-    top_right,
-    bottom_right,
-    bottom_left
+    offset_tl,
+    offset_tr,
+    offset_br,
+    offset_bl
 ])
 
 # Destination points (rectangle)
@@ -114,16 +142,35 @@ vis_image = warped_color.copy()
 padding = 3  # Small padding inside cell
 letter_id = 0
 
+# Total grid dimensions (with outer row/column)
+cols = inner_cols + 2  # +1 on each side
+rows = inner_rows + 2  # +1 on each side
+
 for row in range(rows):
     for col in range(cols):
-        # Calculate cell boundaries
-        x1 = col * cell_size + padding
-        y1 = row * cell_size + padding
-        x2 = (col + 1) * cell_size - padding
-        y2 = (row + 1) * cell_size - padding
+        # Calculate cell boundaries with variable border sizes
+        if col == 0:
+            x1 = 0
+            x2 = output_border_left
+        elif col == cols - 1:
+            x1 = output_border_left + (col - 1) * output_cell_size
+            x2 = output_width
+        else:
+            x1 = output_border_left + (col - 1) * output_cell_size
+            x2 = x1 + output_cell_size
         
-        # Extract the cell
-        cell_img = warped[y1:y2, x1:x2]
+        if row == 0:
+            y1 = 0
+            y2 = output_border_top
+        elif row == rows - 1:
+            y1 = output_border_top + (row - 1) * output_cell_size
+            y2 = output_height
+        else:
+            y1 = output_border_top + (row - 1) * output_cell_size
+            y2 = y1 + output_cell_size
+        
+        # Extract the cell with padding
+        cell_img = warped[y1 + padding:y2 - padding, x1 + padding:x2 - padding]
         
         # Save the cell
         cv2.imwrite(
@@ -132,11 +179,8 @@ for row in range(rows):
         )
         
         # Draw grid on visualization
-        cv2.rectangle(vis_image, 
-                      (col * cell_size, row * cell_size), 
-                      ((col + 1) * cell_size, (row + 1) * cell_size), 
-                      (0, 255, 0), 1)
-        cv2.putText(vis_image, str(letter_id), (col * cell_size + 5, row * cell_size + 20),
+        cv2.rectangle(vis_image, (x1, y1), (x2, y2), (0, 255, 0), 1)
+        cv2.putText(vis_image, str(letter_id), (x1 + 5, y1 + 20),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.3, (0, 0, 255), 1)
         
         letter_id += 1
