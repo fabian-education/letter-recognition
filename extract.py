@@ -428,10 +428,30 @@ def remove_border_remnants(cell_img, edge_width=5, lightness_threshold=200):
     return cleaned
 
 
+def apply_darkness_threshold(cell_img, darkness_threshold=180):
+    """Apply soft thresholding: keep dark pixels, set lighter pixels to white.
+    
+    This is NOT binary thresholding - dark pixels keep their original grayscale value,
+    while pixels lighter than the threshold are set to pure white.
+    
+    Args:
+        cell_img: Grayscale cell image
+        darkness_threshold: Pixels with value BELOW this keep their original value.
+                           Pixels with value >= this are set to white (255).
+                           Lower = stricter, only very dark pixels kept (e.g., 100)
+                           Higher = more lenient, lighter strokes kept (e.g., 200)
+    """
+    result = cell_img.copy()
+    # Set pixels that are not dark enough to white
+    result[result >= darkness_threshold] = 255
+    return result
+
+
 def extract_and_save_cells(warped_gray, warped_color, warped_grid_mask, output_folder, start_letter_id,
                            rows, cols, save_rows, output_cell_size, output_borders, 
                            output_size, padding, center_padding_percent=0.1, boundary_padding=2, char_darkness_threshold=128,
-                           enable_centering=False, border_removal_width=5, border_lightness_threshold=200):
+                           enable_centering=False, border_removal_width=5, border_lightness_threshold=200,
+                           ink_darkness_threshold=180, grid_line_thickness=3):
     """Extract cells from warped image and save them."""
     vis_image = warped_color.copy()
     letter_id = start_letter_id
@@ -458,6 +478,9 @@ def extract_and_save_cells(warped_gray, warped_color, warped_grid_mask, output_f
                 inner_x2 = (x2 - x1) - padding
                 inner_y2 = (y2 - y1) - padding
                 cleaned_cell = cleaned_cell[inner_y1:inner_y2, inner_x1:inner_x2]
+                
+                # Apply darkness threshold: keep dark ink pixels, set lighter pixels to white
+                cleaned_cell = apply_darkness_threshold(cleaned_cell, ink_darkness_threshold)
                 
                 # Remove any remaining border remnants near edges
                 cleaned_cell = remove_border_remnants(cleaned_cell, border_removal_width, border_lightness_threshold)
@@ -494,7 +517,8 @@ def process_image(image_path, image_rows, inner_cols, inner_rows, extra_offsets,
                   output_cell_size, padding, output_folder, start_letter_id, 
                   show_grid_detection, center_padding_percent=0.1, boundary_padding=2,
                   rotation_correction=True, rotation_threshold=0.3, char_darkness_threshold=128,
-                  enable_centering=False, border_removal_width=5, border_lightness_threshold=200):
+                  enable_centering=False, border_removal_width=5, border_lightness_threshold=200,
+                  ink_darkness_threshold=180, grid_line_thickness=3):
     """Process a single image and extract letter cells."""
     image = cv2.imread(image_path)
     if image is None:
@@ -556,13 +580,13 @@ def process_image(image_path, image_rows, inner_cols, inner_rows, extra_offsets,
     save_rows = image_rows + 2
     
     # Create grid mask from calculated cell boundaries (the green lines)
-    grid_mask = create_grid_mask(output_size, rows, cols, output_cell_size, output_borders, line_thickness=3)
+    grid_mask = create_grid_mask(output_size, rows, cols, output_cell_size, output_borders, grid_line_thickness)
     
     vis_image, letter_id = extract_and_save_cells(
         warped_gray, warped_color, grid_mask, output_folder, start_letter_id,
         rows, cols, save_rows, output_cell_size, output_borders, output_size, padding,
         center_padding_percent, boundary_padding, char_darkness_threshold, enable_centering,
-        border_removal_width, border_lightness_threshold
+        border_removal_width, border_lightness_threshold, ink_darkness_threshold, grid_line_thickness
     )
     
     print(f"Extracted {letter_id - start_letter_id} letters (IDs {start_letter_id} to {letter_id - 1})")
@@ -604,8 +628,8 @@ def main():
     # Configuration
     output_folder = "letters"
     image_configs = [
-        {"path": "./data/57-60-bilder-0.jpg", "rows": None},
-        {"path": "./data/57-60-bilder-1.jpg", "rows": 9},
+        {"path": "./data/57-60-bilder-2.jpg", "rows": None},
+        {"path": "./data/57-60-bilder-3.jpg", "rows": 9},
     ]
     
     # Debug settings
@@ -643,6 +667,14 @@ def main():
     border_lightness_threshold = 200 # Pixels lighter than this (value > threshold) near edges are removed
                                      # Lower = more aggressive (180 removes medium gray borders)
                                      # Higher = less aggressive (230 only removes very light gray)
+    
+    # Ink darkness threshold - applied right after cropping
+    ink_darkness_threshold = 220     # Pixels darker than this keep their value, lighter become white
+                                     # Lower = stricter, only very dark ink kept (e.g., 100)
+                                     # Higher = more lenient, lighter strokes kept (e.g., 200)
+    
+    # Grid line thickness for mask removal
+    grid_line_thickness = 3          # Thickness of grid lines to remove (pixels)
 
     os.makedirs(output_folder, exist_ok=True)
 
@@ -662,7 +694,8 @@ def main():
             output_cell_size, padding, output_folder, letter_id, show_grid_detection,
             center_padding_percent, boundary_padding, rotation_correction, rotation_threshold, char_darkness_threshold,
             enable_centering=enable_centering, border_removal_width=border_removal_width,
-            border_lightness_threshold=border_lightness_threshold
+            border_lightness_threshold=border_lightness_threshold, ink_darkness_threshold=ink_darkness_threshold,
+            grid_line_thickness=grid_line_thickness
         )
 
         if debug_image is not None:
