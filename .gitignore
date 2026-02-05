@@ -6,6 +6,7 @@ big_dataset/
 *.odt
 *.txt
 *.ipynb
+*.png
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
