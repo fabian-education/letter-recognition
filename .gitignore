@@ -2,8 +2,10 @@
 raw_data/
 data/
 letters/
+big_dataset/
 *.odt
 *.txt
+*.ipynb
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
