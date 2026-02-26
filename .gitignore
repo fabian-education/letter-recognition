@@ -7,6 +7,7 @@ letters/*
 big_dataset/
 *.odt
 *.txt
+!requirements.txt
 *.ipynb
 *.png
 
