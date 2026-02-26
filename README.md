@@ -30,3 +30,6 @@ python draw_predict.py
 
 ## Dataset
 Training data and pre-trained models are available on the `dataset` branch.
+
+## License
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
