@@ -1,6 +1,9 @@
 # Letter Recognition
 A machine learning project for recognizing handwritten letters (A-Z) using TensorFlow/Keras.
 
+## Preview
+![GUI Example](example/gui.png)
+
 ## Features
 - **extract.py** - Extract letter data from images
 - **draw_predict.py** - GUI application to draw letters and see real-time predictions

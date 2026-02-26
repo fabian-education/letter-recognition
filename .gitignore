@@ -10,6 +10,7 @@ big_dataset/
 !requirements.txt
 *.ipynb
 *.png
+!example/*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
