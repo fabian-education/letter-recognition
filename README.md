@@ -20,3 +20,6 @@ all_models/
 
 ## Usage
 Switch to the `master` branch for the main application code.
+
+## License
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
